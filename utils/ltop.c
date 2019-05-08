@@ -1,4 +1,5 @@
 /*****************************************************************************
+ *
  *  Copyright (C) 2010 Lawrence Livermore National Security, LLC.
  *  This module was written by Jim Garlick <garlick@llnl.gov>
  *  UCRL-CODE-232438 All Rights Reserved.
@@ -38,9 +39,11 @@
 #include <string.h>
 #include <curses.h>
 #include <signal.h>
+
 #if HAVE_GETOPT_H
 #include <getopt.h>
 #endif
+
 #include <libgen.h>
 #include <time.h>
 #include <ctype.h>
@@ -69,21 +72,23 @@
 #define MAXHOSTNAMELEN 64
 #endif
 
-/* (Mostly) fields common to all targets. For use in generic
+/*
+ * (Mostly) fields common to all targets. For use in generic
  * sort/summarize/display code.  Exception is tag, which is set only
  * for OSTs, but needs to be visible to generic loop code.
  */
 typedef struct {
-    char fsname[17];            /* file system name */
-    char name[17];              /* target index (4 hex digits) */
-    char servername[MAXHOSTNAMELEN];/* oss or mds hostname */
-    time_t tgt_metric_timestamp; /* cerebro timestamp for metric (not osc) */
+    char fsname[17];                        /* file system name */
+    char name[17];                          /* target index (4 hex digits) */
+    char servername[MAXHOSTNAMELEN];        /* oss or mds hostname */
+    time_t tgt_metric_timestamp;            /* cerebro timestamp for metric (not osc) */
     char recov_status[RECOVERY_STR_SIZE];   /* free form string representing */
                                             /* recovery status */
-    char tgtstate[2];           /* single char state (blank if unknown), */
-                                /* from osc */
+    char tgtstate[2];                       /* single char state (blank if unknown), */
+                                            /* from osc */
     sample_t pct_cpu;
     sample_t pct_mem;
+    sample_t pct_used;
     int tag;                    /* display this target line underlined */
 } generic_target_t;
 
@@ -117,6 +122,8 @@ typedef struct {
     sample_t rmdir;             /* rmdir ops/sec */
     sample_t statfs;            /* statfs ops/sec */
     sample_t rename;            /* rename ops/sec */
+    sample_t kbytes_free;       /* rename ops/sec */
+    sample_t kbytes_total;      /* rename ops/sec */
     sample_t getxattr;          /* getxattr ops/sec */
 } mdtstat_t;
 
@@ -137,11 +144,15 @@ typedef struct {
     uint64_t num_ost;          /* number of OSTs */
 } fsstat_t;
 
-/* used by _update_display_target */
+/*
+ * Used by _update_display_target.
+ */
 typedef void (* _display_line_fn) (WINDOW *win, int line, void *o,
                                   int stale_secs, time_t tnow);
 
-/* used by _summarize_target */
+/*
+ * Used by _summarize_target.
+ */
 typedef void (* _tgt_update_summary) (void *tgt_v, void *summary_v);
 typedef void * (* _copy_tgtstat) (void *src);
 
@@ -186,40 +197,53 @@ static void _rewind_file_to (FILE *f, List time_series, time_t target);
 static void _list_empty_out (List l);
 
 
-/* comparison functions needed to sort by different fields */
-/* generic */
+/*
+ * Comparison functions needed to sort by different fields.
+ */
+
+/*
+ * Generic.
+ */
 static int _cmp_tgtstat_byserver (void *p1, void *p2);
 static int _cmp_tgtstat_bytarget (void *p1, void *p2);
-static int _cmp_tgtstat_bycpu (void *p1, void *p2);
-static int _cmp_tgtstat_bymem (void *p1, void *p2);
-static int _cmp_tgtstat_noop (void *p1, void *p2);
+static int _cmp_tgtstat_bycpu    (void *p1, void *p2);
+static int _cmp_tgtstat_bymem    (void *p1, void *p2);
+static int _cmp_tgtstat_noop     (void *p1, void *p2);
 
-/* OST/OSS */
-static int _cmp_oststat_byexp (oststat_t *o1, oststat_t *o2);
+/*
+ * OST/OSS.
+ */
+static int _cmp_oststat_byexp   (oststat_t *o1, oststat_t *o2);
 static int _cmp_oststat_bylocks (oststat_t *o1, oststat_t *o2);
-static int _cmp_oststat_bylgr (oststat_t *o1, oststat_t *o2);
-static int _cmp_oststat_bylcr (oststat_t *o1, oststat_t *o2);
-static int _cmp_oststat_byconn (oststat_t *o1, oststat_t *o2);
-static int _cmp_oststat_byiops (oststat_t *o1, oststat_t *o2);
-static int _cmp_oststat_byrbw (oststat_t *o1, oststat_t *o2);
-static int _cmp_oststat_bywbw (oststat_t *o1, oststat_t *o2);
-static int _cmp_oststat_byspc (oststat_t *o1, oststat_t *o2);
+static int _cmp_oststat_bylgr   (oststat_t *o1, oststat_t *o2);
+static int _cmp_oststat_bylcr   (oststat_t *o1, oststat_t *o2);
+static int _cmp_oststat_byconn  (oststat_t *o1, oststat_t *o2);
+static int _cmp_oststat_byiops  (oststat_t *o1, oststat_t *o2);
+static int _cmp_oststat_byrbw   (oststat_t *o1, oststat_t *o2);
+static int _cmp_oststat_bywbw   (oststat_t *o1, oststat_t *o2);
+static int _cmp_oststat_byspc   (oststat_t *o1, oststat_t *o2);
 
-/* MDT/MDS */
-static int _cmp_mdtstat_byopen (mdtstat_t *m1, mdtstat_t *m2);
-static int _cmp_mdtstat_byclose (mdtstat_t *m1, mdtstat_t *m2);
+/*
+ * MDT/MDS.
+ */
+static int _cmp_mdtstat_byopen    (mdtstat_t *m1, mdtstat_t *m2);
+static int _cmp_mdtstat_byclose   (mdtstat_t *m1, mdtstat_t *m2);
 static int _cmp_mdtstat_bygetattr (mdtstat_t *m1, mdtstat_t *m2);
 static int _cmp_mdtstat_bysetattr (mdtstat_t *m1, mdtstat_t *m2);
-static int _cmp_mdtstat_byunlink (mdtstat_t *m1, mdtstat_t *m2);
-static int _cmp_mdtstat_byrmdir (mdtstat_t *m1, mdtstat_t *m2);
-static int _cmp_mdtstat_bymkdir (mdtstat_t *m1, mdtstat_t *m2);
-static int _cmp_mdtstat_byrename (mdtstat_t *m1, mdtstat_t *m2);
+static int _cmp_mdtstat_byunlink  (mdtstat_t *m1, mdtstat_t *m2);
+static int _cmp_mdtstat_byrmdir   (mdtstat_t *m1, mdtstat_t *m2);
+static int _cmp_mdtstat_bymkdir   (mdtstat_t *m1, mdtstat_t *m2);
+static int _cmp_mdtstat_byrename  (mdtstat_t *m1, mdtstat_t *m2);
+static int _cmp_mdtstat_byspc     (mdtstat_t *m1, mdtstat_t *m2);
+static int _cmp_mdtstat_byino     (mdtstat_t *m1, mdtstat_t *m2);
 
-/* Top of display fixed.  We also assume 80 chars wide.
+/*
+ * Top of display fixed.  We also assume 90 chars wide.
  */
 #define TOPWIN_LINES    7       /* lines in topwin */
 
 #define OPTIONS "f:t:s:r:p:"
+
 #if HAVE_GETOPT_LONG
 #define GETOPT(ac,av,opt,lopt) getopt_long (ac,av,opt,lopt,NULL)
 static const struct option longopts[] = {
@@ -234,13 +258,15 @@ static const struct option longopts[] = {
 #define GETOPT(ac,av,opt,lopt) getopt (ac,av,opt)
 #endif
 
-/* N.B. This global is used ONLY for the purpose of allowing
- * _sort_tgtlist () to pass the current time to its various sorting
+/*
+ * N.B. This global is used ONLY for the purpose of allowing
+ *_sort_tgtlist () to pass the current time to its various sorting
  * functions that operate on samples and must validate them.
  */
 static time_t sort_tnow = 0;
 
-/* The order of records in ost_col and mdt_col should match the order
+/*
+ * The order of records in ost_col and mdt_col should match the order
  * the corresponding columns are displayed, so that when the user
  * enters > or < the new sort column is adjacent to the last one in
  * the display.  See _get_sort_index().
@@ -276,7 +302,10 @@ sort_t mdt_col[] = {
     { .fun = (ListCmpF)_cmp_mdtstat_byrename, .k =  'R', .h = "%sRenam"      },
     { .fun = (ListCmpF)_cmp_tgtstat_bycpu,    .k =  'u', .h = " %s%%cpu"     },
     { .fun = (ListCmpF)_cmp_tgtstat_bymem,    .k =  'm', .h = " %s%%mem"     },
+    { .fun = (ListCmpF)_cmp_mdtstat_byspc,    .k =  'T', .h = " %s%%spc"     },
+    { .fun = (ListCmpF)_cmp_mdtstat_byino,    .k =  'T', .h = " %s%%ino"     },
 };
+
 
 static void
 usage (void)
@@ -289,10 +318,13 @@ usage (void)
 "   -p,--play FILE            play session from FILE\n"
 "   -s,--stale-secs SECS      ignore data older than SECS [default: 12]\n"
     );
+
     exit (1);
 }
 
-/* Decide how many lines to allocate to each portion of the window.
+
+/*
+ * Decide how many lines to allocate to each portion of the window.
  * 3 display geometries supported:
  * A) topwin (or a subset) only
  * B) topwin + OST header + some number of OST lines
@@ -324,6 +356,7 @@ size_windows(int total_size, int mdts, int osts,
                  * there is more than one MDT.
                  */
                 *mdtlines = 2 + ((float)detail_size*mdts) / ((float)mdts+osts);
+*mdtlines += 12;
 
                 /*
                  * Make sure both MDT and OST windows have at least 2 rows.
@@ -335,18 +368,24 @@ size_windows(int total_size, int mdts, int osts,
         }
         *ostlines = total_size - (TOPWIN_LINES + *mdtlines);
     }
+
+    return;
 }
+
 
 void
 create_target_window(WINDOW **targetwin, int targetlines, int start_y)
 {
     if (targetlines>=2) {
-        if (!(*targetwin = newwin (targetlines, 80, start_y, 0)))
+        if (!(*targetwin = newwin (targetlines, 90, start_y, 0)))
                 err_exit ("error initializing subwindow");
     } else {
         *targetwin = NULL;
     }
+
+    return;
 }
+
 
 int
 main (int argc, char *argv[])
@@ -424,7 +463,8 @@ main (int argc, char *argv[])
     if (!fs)
         msg_exit ("No live file system data found.");
 
-    /* Poll cerebro for data, then sort the ost data for display.
+    /* 
+     * Poll cerebro for data, then sort the ost data for display.
      * If either the mds or any ost's are up, then ostcount > 0.
      */
     if (playf) {
@@ -434,6 +474,7 @@ main (int argc, char *argv[])
             msg_exit ("premature end of file on playback file");
     } else
         _poll_cerebro (fs, mdt_data, ost_data, stale_secs, recf, &tcycle);
+
     _sort_tgtlist (ost_data, tcycle, ost_col[ost_fp].fun);
     _sort_tgtlist (mdt_data, tcycle, mdt_col[mdt_fp].fun);
     assert (ostview);
@@ -453,21 +494,23 @@ main (int argc, char *argv[])
 
     create_target_window(&ostwin, ostlines, TOPWIN_LINES + mdtlines);
 
-    /* Curses-fu:  keys will not be echoed, tty control sequences aren't
-     * handled by tty driver, getch () times out and returns ERR after
-     * sample_period seconds, multi-char keypad/arrow keys are handled.
-     * Make cursor invisible.
-     */
+/*
+ *  Curses-fu:  keys will not be echoed, tty control sequences aren't
+ *  handled by tty driver, getch () times out and returns ERR after
+ *  sample_period seconds, multi-char keypad/arrow keys are handled.
+ *  Make cursor invisible.
+ */
     raw ();
     noecho ();
     timeout (sample_period * 1000);
     keypad (topwin, TRUE);
     curs_set (0);
 
-    /* Main processing loop:
-     * Update display, read kbd (or timeout), update ost/mdt_data,
-     *   create oss/mds_data (summary of ost/mdt_data), [repeat]
-     */
+/*
+ *  Main processing loop:
+ *  Update display, read kbd (or timeout), update ost/mdt_data,
+ *  create oss/mds_data (summary of ost/mdt_data), [repeat]
+ */
     while (!isendwin ()) {
         if (showhelp) {
             _update_display_help (topwin);
@@ -491,6 +534,7 @@ main (int argc, char *argv[])
                                         _update_display_ost);
             }
         }
+
         switch ((c = getch ())) {
             case 'z':               /* z - toggle between OST and MDT window */
             case 'Z':
@@ -664,14 +708,14 @@ main (int argc, char *argv[])
             showhelp = 0;
 
         if (in_ostwin) {
-            mintgt = &minost;
-            seltgt = &selost;
+            mintgt   = &minost;
+            seltgt   = &selost;
             tgtlines = &ostlines;
             tgtcount = &ostcount;
             target_view = &ostview;
         } else {
-            mintgt = &minmdt;
-            seltgt = &selmdt;
+            mintgt   = &minmdt;
+            seltgt   = &selmdt;
             tgtlines = &mdtlines;
             tgtcount = &mdtcount;
             target_view = &mdtview;
@@ -746,10 +790,13 @@ main (int argc, char *argv[])
             msg ("Log recorded in %s", recpath);
     }
     msg ("Goodbye");
+
     exit (0);
 }
 
-/* Show help window.
+
+/*
+ * Show help window.
  * Uppercase keys are used where lowercase is already taken.
  * For some keys, meaning depends on whether OST or MDT is the
  * currently selected window.
@@ -809,9 +856,13 @@ static void _update_display_help (WINDOW *win)
     mvwprintw (win, y++, 2, "q          Quit");
 
     wrefresh (win);
+
+    return;
 }
 
-/* Update the top (summary) window of the display.
+
+/*
+ * Update the top (summary) window of the display.
  * Sum data rate and free space over all OST's.
  * Sum op rates and free inodes over all MDT's (>1 if CMD).
  */
@@ -834,14 +885,14 @@ _update_display_top (WINDOW *win, char *fs, List ost_data, List mdt_data,
     oststat_t *o;
     mdtstat_t *m;
 
-    /*
-     * Recovery status fits between filesystem name and indicators
-     * like "RECORDING". The former takes up 12+strlen(fs) columns.
-     * The indicators are displayed starting at column 68. Some blank
-     * spaces on either side are desirable.
-     *
-     * We also need to make sure we don't overflow the recovery_status.
-     */
+/*
+ *  Recovery status fits between filesystem name and indicators
+ *  like "RECORDING". The former takes up 12+strlen(fs) columns.
+ *  The indicators are displayed starting at column 68. Some blank
+ *  spaces on either side are desirable.
+ *
+ *  We also need to make sure we don't overflow the recovery_status.
+ */
     recov_status_len = 68 - (12 + strlen(fs) + 4);
     recov_status_len = (RECOVERY_STR_SIZE < recov_status_len ?
                         RECOVERY_STR_SIZE : recov_status_len);
@@ -868,12 +919,12 @@ _update_display_top (WINDOW *win, char *fs, List ost_data, List mdt_data,
         statfs        += sample_rate (m->statfs, tnow);
         rename        += sample_rate (m->rename, tnow);
         getxattr      += sample_rate (m->getxattr, tnow);
-        minodes_free  += sample_val (m->inodes_free, tnow) / (1024*1024);
-        minodes_total += sample_val (m->inodes_total, tnow) / (1024*1024);
+        minodes_free  += sample_val  (m->inodes_free, tnow) / (1024*1024);
+        minodes_total += sample_val  (m->inodes_total, tnow) / (1024*1024);
 
-        /*
-         * recovery_status is just a string, and has no timestamp.
-         */
+/*
+ *      Recovery_status is just a string, and has no timestamp.
+ */
         if ((tnow - m->common.tgt_metric_timestamp) < stale_secs) {
             if (m->common.recov_status && strstr(m->common.recov_status,"RECOV")) {
                 /*
@@ -921,13 +972,14 @@ _update_display_top (WINDOW *win, char *fs, List ost_data, List mdt_data,
         wattroff (win, A_REVERSE);
     }
     y++;
+
     if (tnow - trcv <= stale_secs) { /* mdt data is live */
         mvwprintw (win, y++, 0,
           "    Inodes: %10.3fm total, %10.3fm used (%3.0f%%), %10.3fm free",
                    minodes_total, minodes_total - minodes_free,
                    ((minodes_total - minodes_free) / minodes_total) * 100,
                    minodes_free);
-    } else  {
+    } else {
         mvwprintw (win, y++, 0,
           "    Inodes: %11s total, %11s used (%3s%%), %11s free",
                     "", "", "", "" );
@@ -940,6 +992,7 @@ _update_display_top (WINDOW *win, char *fs, List ost_data, List mdt_data,
     mvwprintw (win, y++, 0,
       "   Bytes/s: %10.3fg read,  %10.3fg write,            %6.0f IOPS",
                rmbps / 1024, wmbps / 1024, iops);
+
     if (tnow - trcv <= stale_secs) { /* mdt data is live */
         mvwprintw (win, y++, 0,
           "   MDops/s: %6.0f open,   %6.0f close,  %6.0f getattr,  %6.0f setattr",
@@ -962,9 +1015,13 @@ _update_display_top (WINDOW *win, char *fs, List ost_data, List mdt_data,
                    "", "", "");
     }
     wrefresh (win);
+
+    return;
 }
 
-/*  Used for list_find_first () of fsstat_t by filesystem name.
+
+/*
+ * Used for list_find_first () of fsstat_t by filesystem name.
  */
 static int
 _match_fsstat(fsstat_t *fsstat, char *fsname)
@@ -972,7 +1029,9 @@ _match_fsstat(fsstat_t *fsstat, char *fsname)
     return (strcmp (fsstat->fsname, fsname) == 0);
 }
 
-/* Trivial destructor for fstat record.
+
+/*
+ * Trivial destructor for fstat record.
  */
 static void
 _destroy_fsstat (fsstat_t *f)
@@ -980,7 +1039,9 @@ _destroy_fsstat (fsstat_t *f)
     free (f);
 }
 
-/* Create an fsstat record.
+
+/*
+ * Create an fsstat record.
  */
 static fsstat_t *
 _create_fsstat (char *fsname, uint64_t mdts, uint64_t osts)
@@ -990,10 +1051,13 @@ _create_fsstat (char *fsname, uint64_t mdts, uint64_t osts)
     strncpy (f->fsname, fsname, sizeof (f->fsname) - 1);
     f->num_mdt = mdts;
     f->num_ost = osts;
-    return f;
+
+    return (f);
 }
 
-/* Display a menu allowing selection from a list of file systems available
+
+/*
+ * Display a menu allowing selection from a list of file systems available
  * for monitoring.
  */
 static void
@@ -1022,9 +1086,13 @@ _update_display_choose_fs (int selfs, WINDOW *win, List fsl)
 
     list_iterator_destroy (fsitr);
     wrefresh (win);
+
+    return;
 }
 
-/* Return a list of fsstat_t records containing file system names
+
+/*
+ * Return a list of fsstat_t records containing file system names
  * and OST counts for all available file systems.
  */
 static List
@@ -1065,10 +1133,13 @@ _find_all_fs (FILE *playf, int stale_secs)
     list_iterator_destroy (itr);
     list_destroy (ost_data);
     list_destroy (mdt_data);
-    return fsl;
+
+    return (fsl);
 }
 
-/* Return a heap-allocated string containing name of selected
+
+/*
+ * Return a heap-allocated string containing name of selected
  * file system, or NULL if no selection was made.
  */
 static char *
@@ -1112,10 +1183,13 @@ _choose_fs (WINDOW *win, FILE *playf, int stale_secs)
 
     list_iterator_destroy (fsitr);
     list_destroy (fsl);
-    return ret;
+
+    return (ret);
 }
 
-/* Left "truncate" s by returning an offset into it such that the new
+
+/*
+ * Left "truncate" s by returning an offset into it such that the new
  * string has at most max characters.
  */
 static char *
@@ -1123,8 +1197,9 @@ _ltrunc (char *s, int max)
 {
     int len = strlen (s);
 
-    return s + (len > max ? len - max : 0);
+    return (s + (len > max ? len - max : 0));
 }
+
 
 static void
 _update_display_hdr (WINDOW *win, int cols, sort_t colhdr[], int sel)
@@ -1139,28 +1214,41 @@ _update_display_hdr (WINDOW *win, int cols, sort_t colhdr[], int sel)
     }
     wattroff(win, A_REVERSE);
     wrefresh (win);
+
+    return;
 }
 
+
+/*pdesr*/
 static void
 _update_display_mdt (WINDOW *win, int line, void *target, int stale_secs,
                      time_t tnow)
 {
     mdtstat_t *m = (mdtstat_t *) target;
 
-    /* Future enhancement: if all "osc status" reported by an
-     * MDT are the same, print the corresponding single
-     * character.  If not, print a character indicating
-     * "mixed" (update man page).
-     * Same for OST.  Then you get clear indicators for
-     * common issues (e.g. OSS died).
-     * For now, omit that field for the MDTs.
-     * See: osc.c:_get_oscstring()
-     *      proc_lustre_oscinfo()
-     *      fs/lustre/osc/%s/ost_server_uuid
-     *      fs/lustre/osc/%s/state
-     *      man ltop "OSC status"
-     *      comment at _update_osc()
-     */
+/*
+ *  Future enhancement: if all "osc status" reported by an
+ *  MDT are the same, print the corresponding single
+ *  character.  If not, print a character indicating
+ *  "mixed" (update man page).
+ *  Same for OST.  Then you get clear indicators for
+ *  common issues (e.g. OSS died).
+ *  For now, omit that field for the MDTs.
+ *  See: osc.c:_get_oscstring()
+ *      proc_lustre_oscinfo()
+ *      fs/lustre/osc/%s/ost_server_uuid
+ *      fs/lustre/osc/%s/state
+ *      man ltop "OSC status"
+ *      comment at _update_osc()
+ */
+    double ktot  = sample_val (m->kbytes_total, tnow);
+    double kfree = sample_val (m->kbytes_free,  tnow);
+    double pct_used  = ktot  > 0 ? ((ktot  - kfree)  / ktot)*100.0 : 0;
+
+/* for inodes */
+    double uktot     = sample_val (m->inodes_total, tnow);
+    double ukfree    = sample_val (m->inodes_free,  tnow);
+    double ipct_used = uktot > 0 ? ((uktot - ukfree) / uktot)*100.0 : 0;
 
     if ((tnow - m->common.tgt_metric_timestamp) > stale_secs) {
         // available info is expired 
@@ -1175,21 +1263,25 @@ _update_display_mdt (WINDOW *win, int line, void *target, int stale_secs,
         /* mdt is not in recovery */
         mvwprintw (win, line, 0, "%4.4s %12.12s"
                    " %5.0f %5.0f %5.0f %5.0f %5.0f %5.0f %5.0f %5.0f"
-                   " %5.0f %5.0f",
+                   " %5.0f %5.0f %5.0f %5.0f",
                    m->common.name, _ltrunc (m->common.servername, 10),
-                   sample_rate (m->open, tnow),
-                   sample_rate (m->close, tnow),
-                   sample_rate (m->getattr, tnow),
-                   sample_rate (m->setattr, tnow),
-                   sample_rate (m->unlink, tnow),
-                   sample_rate (m->mkdir, tnow),
-                   sample_rate (m->rmdir, tnow),
-                   sample_rate (m->rename, tnow),
-                   sample_val (m->common.pct_cpu, tnow),
-                   sample_val (m->common.pct_mem, tnow)
+                   sample_rate (m->open,           tnow),
+                   sample_rate (m->close,          tnow),
+                   sample_rate (m->getattr,        tnow),
+                   sample_rate (m->setattr,        tnow),
+                   sample_rate (m->unlink,         tnow),
+                   sample_rate (m->mkdir,          tnow),
+                   sample_rate (m->rmdir,          tnow),
+                   sample_rate (m->rename,         tnow),
+                   sample_val  (m->common.pct_cpu, tnow),
+                   sample_val  (m->common.pct_mem, tnow),
+                   pct_used, ipct_used
                    );
     }
+
+    return;
 }
+
 
 static void
 _update_display_ost (WINDOW *win, int line, void *target, int stale_secs,
@@ -1197,48 +1289,58 @@ _update_display_ost (WINDOW *win, int line, void *target, int stale_secs,
 {
     oststat_t *o = (oststat_t *) target;
 
-    double ktot = sample_val (o->kbytes_total, tnow);
+    double ktot  = sample_val (o->kbytes_total, tnow);
     double kfree = sample_val (o->kbytes_free, tnow);
     double pct_used = ktot > 0 ? ((ktot - kfree) / ktot)*100.0 : 0;
 
-    /* available info is expired */
+/*
+ *  Available info is expired.
+ */
     if ((tnow - o->common.tgt_metric_timestamp) > stale_secs) {
         mvwprintw (win, line, 0, "%4.4s %1.1s data is stale",
                    o->common.name, o->common.tgtstate);
-    /* ost is in recovery - display recovery stats */
+/*
+ *  Ost is in recovery - display recovery stats.
+ */
     } else if (strncmp (o->common.recov_status, "COMPLETE", 8) != 0
             && strncmp (o->common.recov_status, "INACTIVE", 8) != 0) {
         mvwprintw (win, line, 0, "%4.4s %1.1s %10.10s   %s",
                    o->common.name, o->common.tgtstate,
                    _ltrunc (o->common.servername, 10),
                    o->common.recov_status);
-    /* ost is not in recover (state == INACTIVE|COMPLETE) */
+/*
+ *  Ost is not in recover (state == INACTIVE|COMPLETE).
+ */
     } else {
         mvwprintw (win, line, 0, "%4.4s %1.1s %10.10s"
                    " %5.0f %4.0f %5.0f %5.0f %5.0f %7.0f %4.0f %4.0f"
                    " %4.0f %4.0f %4.0f",
                    o->common.name, o->common.tgtstate,
                    _ltrunc (o->common.servername, 10),
-                   sample_val (o->num_exports, tnow),
+                   sample_val  (o->num_exports, tnow),
                    sample_rate (o->connect, tnow),
                    sample_rate (o->rbytes, tnow) / (1024*1024),
                    sample_rate (o->wbytes, tnow) / (1024*1024),
                    sample_rate (o->iops, tnow),
-                   sample_val (o->lock_count, tnow),
-                   sample_val (o->grant_rate, tnow),
-                   sample_val (o->cancel_rate, tnow),
-                   sample_val (o->common.pct_cpu, tnow),
-                   sample_val (o->common.pct_mem, tnow),
+                   sample_val  (o->lock_count, tnow),
+                   sample_val  (o->grant_rate, tnow),
+                   sample_val  (o->cancel_rate, tnow),
+                   sample_val  (o->common.pct_cpu, tnow),
+                   sample_val  (o->common.pct_mem, tnow),
                    pct_used);
     }
+
+    return;
 }
 
-/* Update the ost/oss or mdt/mds window of the display.
- * tgt is either an mdt, mds, ost, or oss
+
+/*
+ * Update the ost/oss or mdt/mds window of the display.
+ * tgt is either an mdt, mds, ost, or oss.
  * Mintgt is the first tgt to display (zero origin).
  * Seltgt is the selected tgt, or -1 if none are selected (zero origin).
  * Stale_secs is the number of seconds after which data is expried.
- * _display_line_fn is the function to call to display one target.
+ * display_line_fn is the function to call to display one target.
  */
 static void
 _update_display_target (WINDOW *win, List tgt_data, int mintgt, int seltgt,
@@ -1267,9 +1369,13 @@ _update_display_target (WINDOW *win, List tgt_data, int mintgt, int seltgt,
     list_iterator_destroy (itr);
 
     wrefresh (win);
+
+    return;
 }
 
-/*  Used for list_find_first () of MDT by mds name.
+
+/*
+ * Used for list_find_first () of MDT by mds name.
  */
 static int
 _match_mdtstat2 (mdtstat_t *m, char *name)
@@ -1277,8 +1383,10 @@ _match_mdtstat2 (mdtstat_t *m, char *name)
     return (strcmp (m->common.servername, name) == 0);
 }
 
-/*  Used for list_find_first () of MDT by filesystem and target name,
- *  e.g. fs-MDTxxxx.
+
+/*
+ * Used for list_find_first () of MDT by filesystem and target name,
+ * e.g. fs-MDTxxxx.
  */
 static int
 _match_mdtstat (mdtstat_t *m, char *name)
@@ -1293,7 +1401,9 @@ _match_mdtstat (mdtstat_t *m, char *name)
     return (targetmatch && fsmatch);
 }
 
-/* Copy an mdtstat record.
+
+/*
+ * Copy an mdtstat record.
  */
 static void *
 _copy_mdtstat (void *src_v)
@@ -1302,25 +1412,34 @@ _copy_mdtstat (void *src_v)
     mdtstat_t *m = xmalloc (sizeof (*m));
 
     memcpy (m, src, sizeof (*m));
-    m->inodes_free =  sample_copy (src->inodes_free);
-    m->inodes_total = sample_copy (src->inodes_total);
-    m->open =         sample_copy (src->open);
-    m->close =        sample_copy (src->close);
-    m->getattr =      sample_copy (src->getattr);
-    m->setattr =      sample_copy (src->setattr);
-    m->link =         sample_copy (src->link);
-    m->unlink =       sample_copy (src->unlink);
-    m->mkdir =        sample_copy (src->mkdir);
-    m->rmdir =        sample_copy (src->rmdir);
-    m->statfs =       sample_copy (src->statfs);
-    m->rename =       sample_copy (src->rename);
-    m->common.pct_cpu =      sample_copy (src->common.pct_cpu);
-    m->common.pct_mem =      sample_copy (src->common.pct_mem);
+    m->inodes_free    = sample_copy (src->inodes_free);
+    m->inodes_total   = sample_copy (src->inodes_total);
+    m->open           = sample_copy (src->open);
+    m->close          = sample_copy (src->close);
+    m->getattr        = sample_copy (src->getattr);
+    m->setattr        = sample_copy (src->setattr);
+    m->link           = sample_copy (src->link);
+    m->unlink         = sample_copy (src->unlink);
+    m->mkdir          = sample_copy (src->mkdir);
+    m->rmdir          = sample_copy (src->rmdir);
+    m->statfs         = sample_copy (src->statfs);
+    m->rename         = sample_copy (src->rename);
+    m->kbytes_free    = sample_copy (src->kbytes_free);
+    m->kbytes_total   = sample_copy (src->kbytes_total);
+    m->common.pct_cpu = sample_copy (src->common.pct_cpu);
+    m->common.pct_mem = sample_copy (src->common.pct_mem);
+
+    /*sample_t kbytes_free;*/    /* rename ops/sec */
+    /*m->common.pct_mem =      sample_copy (src->common.pct_mem); */
+
     m->getxattr =     sample_copy (src->getxattr);
-    return (void *) m;
+
+    return ((void *) m);
 }
 
-/* Create an mdtstat record.
+
+/*
+ * Create an mdtstat record.
  */
 static mdtstat_t *
 _create_mdtstat (char *name, int stale_secs)
@@ -1334,25 +1453,30 @@ _create_mdtstat (char *name, int stale_secs)
              mdtx ? mdtx - name : sizeof (m->common.fsname)-1);
     *m->common.tgtstate = '\0';
     *m->common.recov_status='\0';
-    m->inodes_free =  sample_create (stale_secs);
-    m->inodes_total = sample_create (stale_secs);
-    m->open =         sample_create (stale_secs);
-    m->close =        sample_create (stale_secs);
-    m->getattr =      sample_create (stale_secs);
-    m->setattr =      sample_create (stale_secs);
-    m->link =         sample_create (stale_secs);
-    m->unlink =       sample_create (stale_secs);
-    m->mkdir =        sample_create (stale_secs);
-    m->rmdir =        sample_create (stale_secs);
-    m->statfs =       sample_create (stale_secs);
-    m->rename =       sample_create (stale_secs);
-    m->common.pct_cpu =      sample_create (stale_secs);
-    m->common.pct_mem =      sample_create (stale_secs);
-    m->getxattr =     sample_create (stale_secs);
-    return m;
+    m->inodes_free    = sample_create (stale_secs);
+    m->inodes_total   = sample_create (stale_secs);
+    m->open           = sample_create (stale_secs);
+    m->close          = sample_create (stale_secs);
+    m->getattr        = sample_create (stale_secs);
+    m->setattr        = sample_create (stale_secs);
+    m->link           = sample_create (stale_secs);
+    m->unlink         = sample_create (stale_secs);
+    m->mkdir          = sample_create (stale_secs);
+    m->rmdir          = sample_create (stale_secs);
+    m->statfs         = sample_create (stale_secs);
+    m->rename         = sample_create (stale_secs);
+    m->kbytes_free    = sample_create (stale_secs);
+    m->kbytes_total   = sample_create (stale_secs);
+    m->common.pct_cpu = sample_create (stale_secs);
+    m->common.pct_mem = sample_create (stale_secs);
+    m->getxattr       = sample_create (stale_secs);
+
+    return (m);
 }
 
-/* Destroy an mdtstat record.
+
+/*
+ * Destroy an mdtstat record.
  */
 static void
 _destroy_mdtstat (mdtstat_t *m)
@@ -1369,13 +1493,19 @@ _destroy_mdtstat (mdtstat_t *m)
     sample_destroy (m->rmdir);
     sample_destroy (m->statfs);
     sample_destroy (m->rename);
+    sample_destroy (m->kbytes_free);
+    sample_destroy (m->kbytes_total);
     sample_destroy (m->common.pct_cpu);
     sample_destroy (m->common.pct_mem);
     sample_destroy (m->getxattr);
     free (m);
+
+    return;
 }
 
-/*  Used for list_find_first () of OST by target name, e.g. fs-OSTxxxx.
+
+/*
+ * Used for list_find_first () of OST by target name, e.g. fs-OSTxxxx.
  */
 static int
 _match_oststat (oststat_t *o, char *name)
@@ -1390,7 +1520,9 @@ _match_oststat (oststat_t *o, char *name)
     return (targetmatch && fsmatch);
 }
 
-/*  Used for list_find_first () of OST by oss name.
+
+/*
+ * Used for list_find_first () of OST by oss name.
  */
 static int
 _match_oststat2 (oststat_t *o, char *name)
@@ -1398,7 +1530,9 @@ _match_oststat2 (oststat_t *o, char *name)
     return (strcmp (o->common.servername, name) == 0);
 }
 
-/* Helper for _cmp_server_names ()
+
+/*
+ * Helper for _cmp_server_names ().
  */
 static char *
 _numerical_suffix (char *s, unsigned long *np)
@@ -1409,10 +1543,13 @@ _numerical_suffix (char *s, unsigned long *np)
         p--;
     if (*p)
         *np = strtoul (p, NULL, 10);
-    return p;
+
+    return (p);
 }
 
-/* Helper for _cmp_oststat_byoss () and _cmp_mdtstat_bymds () Like
+
+/*
+ * Helper for _cmp_oststat_byoss () and _cmp_mdtstat_bymds () Like
  * strcmp, but handle variable-width (unpadded) numerical suffixes, if
  * any.
  */
@@ -1429,20 +1566,25 @@ _cmp_server_names (char *servername1, char *servername2)
         return (n1 < n2 ? -1 
               : n1 > n2 ? 1 : 0);
     }
-    return strcmp (servername1, servername2);
+
+    return (strcmp (servername1, servername2));
 }
 
-/* Used for list_sort () of OST or MDT list by servername.
+
+/*
+ * Used for list_sort () of OST or MDT list by servername.
  * See _cmp_server_names for details.
  */
 static int
 _cmp_tgtstat_byserver (void *p1, void *p2)
 {
-    return _cmp_server_names (((generic_target_t *) p1)->servername,
-                              ((generic_target_t *) p2)->servername);
+    return (_cmp_server_names (((generic_target_t *) p1)->servername,
+                              ((generic_target_t *) p2)->servername));
 }
 
-/* Used for list_sort () of OST/MDT list by target name.
+
+/*
+ * Used for list_sort () of OST/MDT list by target name.
  * Fixed width hex sorts alphanumerically.
  */
 static int
@@ -1452,178 +1594,249 @@ _cmp_tgtstat_bytarget (void *p1, void *p2)
                    ((generic_target_t *) p2)->name);
 }
 
-/* Used for list_sort () of OST/MDT list by pct_mem (descending order).
+
+/*
+ * Used for list_sort () of OST/MDT list by pct_mem (descending order).
  */
 static int
 _cmp_tgtstat_bymem (void *p1, void *p2)
 {
-    return -1 * sample_val_cmp (((generic_target_t *) p1)->pct_mem,
-                                ((generic_target_t *) p2)->pct_mem, sort_tnow);
+    return (-1 * sample_val_cmp (((generic_target_t *) p1)->pct_mem,
+                                ((generic_target_t *) p2)->pct_mem, sort_tnow));
 }
 
-/* Used for list_sort () of OST/MDT list by pct_cpu (descending order).
+
+/*
+ * Used for list_sort () of OST/MDT list by pct_cpu (descending order).
  */
 static int
 _cmp_tgtstat_bycpu (void *p1, void *p2)
 {
-    return -1 * sample_val_cmp (((generic_target_t *) p1)->pct_cpu,
-                                ((generic_target_t *) p2)->pct_cpu, sort_tnow);
+    return (-1 * sample_val_cmp (((generic_target_t *) p1)->pct_cpu,
+                                 ((generic_target_t *) p2)->pct_cpu, sort_tnow));
 }
 
-/* Used for no-op list_sort () of OST/MDT list.
+
+/*
+ * Used for no-op list_sort () of OST/MDT list.
  */
 static int
 _cmp_tgtstat_noop (void *p1, void *p2)
 {
-    return 0;
+    return (0);
 }
 
-/* Used for list_sort () of OST list by export count (ascending order).
+
+/*
+ * Used for list_sort () of OST list by export count (ascending order).
  */
 static int
 _cmp_oststat_byexp (oststat_t *o1, oststat_t *o2)
 {
-    return sample_val_cmp (o1->num_exports, o2->num_exports, sort_tnow);
+    return (sample_val_cmp (o1->num_exports, o2->num_exports, sort_tnow));
 }
 
-/* Used for list_sort () of OST list by lock count (descending order).
+
+/*
+ * Used for list_sort () of OST list by lock count (descending order).
  */
 static int
 _cmp_oststat_bylocks (oststat_t *o1, oststat_t *o2)
 {
-    return -1 * sample_val_cmp (o1->lock_count, o2->lock_count, sort_tnow);
+    return (-1 * sample_val_cmp (o1->lock_count, o2->lock_count, sort_tnow));
 }
 
-/* Used for list_sort () of OST list by lock grant rate (descending order).
+
+/*
+ * Used for list_sort () of OST list by lock grant rate (descending order).
  */
 static int
 _cmp_oststat_bylgr (oststat_t *o1, oststat_t *o2)
 {
-    return -1 * sample_val_cmp (o1->grant_rate, o2->grant_rate, sort_tnow);
+    return (-1 * sample_val_cmp (o1->grant_rate, o2->grant_rate, sort_tnow));
 }
 
-/* Used for list_sort () of OST list by lock cancel rate (descending order).
+
+/*
+ * Used for list_sort () of OST list by lock cancel rate (descending order).
  */
 static int
 _cmp_oststat_bylcr (oststat_t *o1, oststat_t *o2)
 {
-    return -1 * sample_val_cmp (o1->cancel_rate, o2->cancel_rate, sort_tnow);
+    return (-1 * sample_val_cmp (o1->cancel_rate, o2->cancel_rate, sort_tnow));
 }
 
-/* Used for list_sort () of OST list by (re-)connect rate (descending order).
+
+/*
+ * Used for list_sort () of OST list by (re-)connect rate (descending order).
  */
 static int
 _cmp_oststat_byconn (oststat_t *o1, oststat_t *o2)
 {
-    return -1 * sample_rate_cmp (o1->connect, o2->connect, sort_tnow);
+    return (-1 * sample_rate_cmp (o1->connect, o2->connect, sort_tnow));
 }
 
-/* Used for list_sort () of OST list by iops (descending order).
+
+/*
+ * Used for list_sort () of OST list by iops (descending order).
  */
 static int
 _cmp_oststat_byiops (oststat_t *o1, oststat_t *o2)
 {
-    return -1 * sample_rate_cmp (o1->iops, o2->iops, sort_tnow);
+    return (-1 * sample_rate_cmp (o1->iops, o2->iops, sort_tnow));
 }
 
-/* Used for list_sort () of OST list by read b/w (descending order).
+
+/*
+ * Used for list_sort () of OST list by read b/w (descending order).
  */
 static int
 _cmp_oststat_byrbw (oststat_t *o1, oststat_t *o2)
 {
-    return -1 * sample_rate_cmp (o1->rbytes, o2->rbytes, sort_tnow);
+    return (-1 * sample_rate_cmp (o1->rbytes, o2->rbytes, sort_tnow));
 }
 
-/* Used for list_sort () of OST list by write b/w (descending order).
+
+/*
+ * Used for list_sort () of OST list by write b/w (descending order).
  */
 static int
 _cmp_oststat_bywbw (oststat_t *o1, oststat_t *o2)
 {
-    return -1 * sample_rate_cmp (o1->wbytes, o2->wbytes, sort_tnow);
+    return (-1 * sample_rate_cmp (o1->wbytes, o2->wbytes, sort_tnow));
 }
 
 
-/* Used for list_sort () of OST list by pct space used (descending order).
+/*
+ * Used for list_sort () of OST list by pct space used (descending order).
  */
 static int
 _cmp_oststat_byspc (oststat_t *o1, oststat_t *o2)
 {
     double t1 = sample_val (o1->kbytes_total, sort_tnow);
-    double f1 = sample_val (o1->kbytes_free, sort_tnow);
+    double f1 = sample_val (o1->kbytes_free,  sort_tnow);
     double p1 = t1 > 0 ? ((t1 - f1) / t1)*100.0 : 0;
     double t2 = sample_val (o2->kbytes_total, sort_tnow);
-    double f2 = sample_val (o2->kbytes_free, sort_tnow);
+    double f2 = sample_val (o2->kbytes_free,  sort_tnow);
     double p2 = t2 > 0 ? ((t2 - f2) / t2)*100.0 : 0;
     int ret = p1 == p2 ? 0 : p1 < p2 ? -1 : 1; /* ascending */
 
-    return -1 * ret;
+    return (-1 * ret);
 }
 
-/* Used for list_sort () of MDT list by opens (descending order).
+
+static int
+_cmp_mdtstat_byspc (mdtstat_t *m1, mdtstat_t *m2)
+{
+    double t1 = sample_val (m1->kbytes_total, sort_tnow);
+    double f1 = sample_val (m1->kbytes_free,  sort_tnow);
+    double p1 = t1 > 0 ? ((t1 - f1) / t1)*100.0 : 0;
+    double t2 = sample_val (m2->kbytes_total, sort_tnow);
+    double f2 = sample_val (m2->kbytes_free,  sort_tnow);
+    double p2 = t2 > 0 ? ((t2 - f2) / t2)*100.0 : 0;
+    int ret = p1 == p2 ? 0 : p1 < p2 ? -1 : 1; /* ascending */
+
+    return (-1 * ret);
+}
+
+
+static int
+_cmp_mdtstat_byino (mdtstat_t *m1, mdtstat_t *m2)
+{
+    double t1 = sample_val (m1->inodes_total, sort_tnow);
+    double f1 = sample_val (m1->inodes_free,  sort_tnow);
+    double p1 = t1 > 0 ? ((t1 - f1) / t1)*100.0 : 0;
+    double t2 = sample_val (m2->inodes_total, sort_tnow);
+    double f2 = sample_val (m2->inodes_free,  sort_tnow);
+    double p2 = t2 > 0 ? ((t2 - f2) / t2)*100.0 : 0;
+    int ret = p1 == p2 ? 0 : p1 < p2 ? -1 : 1; /* ascending */
+
+    return (-1 * ret);
+}
+
+
+/*
+ * Used for list_sort () of MDT list by opens (descending order).
  */
 static int
 _cmp_mdtstat_byopen (mdtstat_t *m1, mdtstat_t *m2)
 {
-    return -1 * sample_rate_cmp (m1->open, m2->open, sort_tnow);
+    return (-1 * sample_rate_cmp (m1->open, m2->open, sort_tnow));
 }
 
-/* Used for list_sort () of MDT list by closes (descending order).
+
+/*
+ * Used for list_sort () of MDT list by closes (descending order).
  */
 static int
 _cmp_mdtstat_byclose (mdtstat_t *m1, mdtstat_t *m2)
 {
-    return -1 * sample_rate_cmp (m1->close, m2->close, sort_tnow);
+    return (-1 * sample_rate_cmp (m1->close, m2->close, sort_tnow));
 }
 
-/* Used for list_sort () of MDT list by getattrs (descending order).
+
+/*
+ * Used for list_sort () of MDT list by getattrs (descending order).
  */
 static int
 _cmp_mdtstat_bygetattr (mdtstat_t *m1, mdtstat_t *m2)
 {
-    return -1 * sample_rate_cmp (m1->getattr, m2->getattr, sort_tnow);
+    return (-1 * sample_rate_cmp (m1->getattr, m2->getattr, sort_tnow));
 }
 
-/* Used for list_sort () of MDT list by setattrs (descending order).
+
+/*
+ * Used for list_sort () of MDT list by setattrs (descending order).
  */
 static int
 _cmp_mdtstat_bysetattr (mdtstat_t *m1, mdtstat_t *m2)
 {
-    return -1 * sample_rate_cmp (m1->setattr, m2->setattr, sort_tnow);
+    return (-1 * sample_rate_cmp (m1->setattr, m2->setattr, sort_tnow));
 }
 
-/* Used for list_sort () of MDT list by unlinks (descending order).
+
+/*
+ * Used for list_sort () of MDT list by unlinks (descending order).
  */
 static int
 _cmp_mdtstat_byunlink (mdtstat_t *m1, mdtstat_t *m2)
 {
-    return -1 * sample_rate_cmp (m1->unlink, m2->unlink, sort_tnow);
+    return (-1 * sample_rate_cmp (m1->unlink, m2->unlink, sort_tnow));
 }
 
-/* Used for list_sort () of MDT list by rmdirs (descending order).
+
+/*
+ * Used for list_sort () of MDT list by rmdirs (descending order).
  */
 static int
 _cmp_mdtstat_byrmdir (mdtstat_t *m1, mdtstat_t *m2)
 {
-    return -1 * sample_rate_cmp (m1->rmdir, m2->rmdir, sort_tnow);
+    return (-1 * sample_rate_cmp (m1->rmdir, m2->rmdir, sort_tnow));
 }
 
-/* Used for list_sort () of MDT list by mkdirs (descending order).
+
+/*
+ * Used for list_sort () of MDT list by mkdirs (descending order).
  */
 static int
 _cmp_mdtstat_bymkdir (mdtstat_t *m1, mdtstat_t *m2)
 {
-    return -1 * sample_rate_cmp (m1->mkdir, m2->mkdir, sort_tnow);
+    return (-1 * sample_rate_cmp (m1->mkdir, m2->mkdir, sort_tnow));
 }
 
-/* Used for list_sort () of MDT list by renames (descending order).
+
+/*
+ * Used for list_sort () of MDT list by renames (descending order).
  */
 static int
 _cmp_mdtstat_byrename (mdtstat_t *m1, mdtstat_t *m2)
 {
-    return -1 * sample_rate_cmp (m1->rename, m2->rename, sort_tnow);
+    return (-1 * sample_rate_cmp (m1->rename, m2->rename, sort_tnow));
 }
 
-/* Create an oststat record.
+
+/*
+ * Create an oststat record.
  */
 static oststat_t *
 _create_oststat (char *name, int stale_secs)
@@ -1635,24 +1848,27 @@ _create_oststat (char *name, int stale_secs)
     strncpy (o->common.name, ostx ? ostx + 4 : name, sizeof(o->common.name) - 1);
     strncpy (o->common.fsname, name,
              ostx ? ostx - name : sizeof (o->common.fsname) - 1);
-    *o->common.tgtstate = '\0';
-    *o->common.recov_status='\0';
-    o->rbytes =       sample_create (stale_secs);
-    o->wbytes =       sample_create (stale_secs);
-    o->iops =         sample_create (stale_secs);
-    o->num_exports =  sample_create (stale_secs);
-    o->lock_count =   sample_create (stale_secs);
-    o->grant_rate =   sample_create (stale_secs);
-    o->cancel_rate =  sample_create (stale_secs);
-    o->connect =      sample_create (stale_secs);
-    o->kbytes_free =  sample_create (stale_secs);
-    o->kbytes_total = sample_create (stale_secs);
-    o->common.pct_cpu      = sample_create (stale_secs);
-    o->common.pct_mem      = sample_create (stale_secs);
-    return o;
+    *o->common.tgtstate     = '\0';
+    *o->common.recov_status = '\0';
+    o->rbytes          = sample_create (stale_secs);
+    o->wbytes          = sample_create (stale_secs);
+    o->iops            = sample_create (stale_secs);
+    o->num_exports     = sample_create (stale_secs);
+    o->lock_count      = sample_create (stale_secs);
+    o->grant_rate      = sample_create (stale_secs);
+    o->cancel_rate     = sample_create (stale_secs);
+    o->connect         = sample_create (stale_secs);
+    o->kbytes_free     = sample_create (stale_secs);
+    o->kbytes_total    = sample_create (stale_secs);
+    o->common.pct_cpu  = sample_create (stale_secs);
+    o->common.pct_mem  = sample_create (stale_secs);
+
+    return (o);
 }
 
-/* Destroy an oststat record.
+
+/*
+ * Destroy an oststat record.
  */
 static void
 _destroy_oststat (oststat_t *o)
@@ -1670,9 +1886,13 @@ _destroy_oststat (oststat_t *o)
     sample_destroy (o->common.pct_cpu);
     sample_destroy (o->common.pct_mem);
     free (o);
+
+    return;
 }
 
-/* Copy an oststat record.
+
+/*
+ * Copy an oststat record.
  */
 static void *
 _copy_oststat (void *src)
@@ -1681,22 +1901,25 @@ _copy_oststat (void *src)
     oststat_t *o = xmalloc (sizeof (*o));
 
     memcpy (o, o1, sizeof (*o));
-    o->rbytes =       sample_copy (o1->rbytes);
-    o->wbytes =       sample_copy (o1->wbytes);
-    o->iops =         sample_copy (o1->iops);
-    o->num_exports =  sample_copy (o1->num_exports);
-    o->lock_count =   sample_copy (o1->lock_count);
-    o->grant_rate =   sample_copy (o1->grant_rate);
-    o->cancel_rate =  sample_copy (o1->cancel_rate);
-    o->connect =      sample_copy (o1->connect);
-    o->kbytes_free =  sample_copy (o1->kbytes_free);
-    o->kbytes_total = sample_copy (o1->kbytes_total);
-    o->common.pct_cpu      = sample_copy (o1->common.pct_cpu);
-    o->common.pct_mem      = sample_copy (o1->common.pct_mem);
-    return (void *) o;
+    o->rbytes          = sample_copy (o1->rbytes);
+    o->wbytes          = sample_copy (o1->wbytes);
+    o->iops            = sample_copy (o1->iops);
+    o->num_exports     = sample_copy (o1->num_exports);
+    o->lock_count      = sample_copy (o1->lock_count);
+    o->grant_rate      = sample_copy (o1->grant_rate);
+    o->cancel_rate     = sample_copy (o1->cancel_rate);
+    o->connect         = sample_copy (o1->connect);
+    o->kbytes_free     = sample_copy (o1->kbytes_free);
+    o->kbytes_total    = sample_copy (o1->kbytes_total);
+    o->common.pct_cpu  = sample_copy (o1->common.pct_cpu);
+    o->common.pct_mem  = sample_copy (o1->common.pct_mem);
+
+    return ((void *) o);
 }
 
-/* Match an OST or MDT target against a file system name.
+
+/*
+ * Match an OST or MDT target against a file system name.
  * Target names are assumed to be of the form fs-OSTxxxx or fs-MDTxxxx.
  * Careful of hyphen in file system name (see issue #50).
  */
@@ -1707,11 +1930,14 @@ _fsmatch (char *name, char *fs)
     int len = p ? p - name : strlen (name);
 
     if (strlen (fs) == len && strncmp (name, fs, len) == 0)
-        return 1;
-    return 0;
+        return (1);
+
+    return (0);
 }
 
-/* Update oststat_t record (tgtstate field) in ost_data list for
+
+/*
+ * Update oststat_t record (tgtstate field) in ost_data list for
  * specified ostname.  Create an entry if one doesn't exist.
  * FIXME(design): we only keep one OSC state per OST, but possibly multiple
  * MDT's are reporting it under CMD and last in wins.
@@ -1730,7 +1956,10 @@ _update_osc (char *name, char *state, List ost_data,
         strncpy (o->common.tgtstate, "", sizeof (o->common.tgtstate) - 1);
     else
         strncpy (o->common.tgtstate, state, sizeof (o->common.tgtstate) - 1);
+
+    return;
 }
+
 
 static void
 _decode_osc_v1 (char *val, char *fs, List ost_data,
@@ -1742,6 +1971,7 @@ _decode_osc_v1 (char *val, char *fs, List ost_data,
 
     if (lmt_osc_decode_v1 (val, &servername, &oscinfo) < 0)
         return;
+
     itr = list_iterator_create (oscinfo);
     while ((s = list_next (itr))) {
         if (lmt_osc_decode_v1_oscinfo (s, &oscname, &tgtstate) >= 0) {
@@ -1755,9 +1985,13 @@ _decode_osc_v1 (char *val, char *fs, List ost_data,
     list_iterator_destroy (itr);
     list_destroy (oscinfo);
     free (servername);
+
+    return;
 }
 
-/* Update oststat_t record in ost_data list for specified ostname.
+
+/*
+ * Update oststat_t record in ost_data list for specified ostname.
  * Create an entry if one doesn't exist.
  */
 static void
@@ -1789,22 +2023,25 @@ _update_ost (char *ostname, char *servername, uint64_t read_bytes,
                       "%s", servername);
         }
         o->common.tgt_metric_timestamp = trcv;
-        sample_update (o->rbytes, (double)read_bytes, trcv);
-        sample_update (o->wbytes, (double)write_bytes, trcv);
-        sample_update (o->iops, (double)iops, trcv);
-        sample_update (o->num_exports, (double)num_exports, trcv);
-        sample_update (o->lock_count, (double)lock_count, trcv);
-        sample_update (o->grant_rate, (double)grant_rate, trcv);
-        sample_update (o->cancel_rate, (double)cancel_rate, trcv);
-        sample_update (o->connect, (double)connect, trcv);
-        sample_update (o->kbytes_free, (double)kbytes_free, trcv);
-        sample_update (o->kbytes_total, (double)kbytes_total, trcv);
+        sample_update (o->rbytes,         (double)read_bytes, trcv);
+        sample_update (o->wbytes,         (double)write_bytes, trcv);
+        sample_update (o->iops,           (double)iops, trcv);
+        sample_update (o->num_exports,    (double)num_exports, trcv);
+        sample_update (o->lock_count,     (double)lock_count, trcv);
+        sample_update (o->grant_rate,     (double)grant_rate, trcv);
+        sample_update (o->cancel_rate,    (double)cancel_rate, trcv);
+        sample_update (o->connect,        (double)connect, trcv);
+        sample_update (o->kbytes_free,    (double)kbytes_free, trcv);
+        sample_update (o->kbytes_total,   (double)kbytes_total, trcv);
         sample_update (o->common.pct_cpu, (double)pct_cpu, trcv);
         sample_update (o->common.pct_mem, (double)pct_mem, trcv);
         snprintf (o->common.recov_status, sizeof(o->common.recov_status),
                   "%s", recov_status);
     }
+
+    return;
 }
+
 
 static void
 _decode_ost_v2 (char *val, char *fs, List ost_data,
@@ -1850,15 +2087,20 @@ _decode_ost_v2 (char *val, char *fs, List ost_data,
     list_iterator_destroy (itr);
     list_destroy (ostinfo);
     free (servername);
+
+    return;
 }
 
-/* Update mdtstat_t record in mdt_data list for specified mdtname.
+
+/*
+ * Update mdtstat_t record in mdt_data list for specified mdtname.
  * Create an entry if one doesn't exist.
  */
 static void
-_update_mdt (char *mdtname, char *servername, uint64_t inodes_free,
-             uint64_t inodes_total, uint64_t kbytes_free,
-             uint64_t kbytes_total, float pct_cpu, float pct_mem,
+_update_mdt (char *mdtname, char *servername, 
+             uint64_t inodes_free, uint64_t inodes_total, 
+             uint64_t kbytes_free, uint64_t kbytes_total, 
+             float pct_cpu, float pct_mem,
              char *recov_status, List mdops, List mdt_data, time_t tnow,
              time_t trcv, int stale_secs, int version)
 {
@@ -1888,6 +2130,8 @@ _update_mdt (char *mdtname, char *servername, uint64_t inodes_free,
             sample_invalidate (m->rmdir);
             sample_invalidate (m->statfs);
             sample_invalidate (m->rename);
+            sample_invalidate (m->kbytes_free);
+            sample_invalidate (m->kbytes_total);
             sample_invalidate (m->getxattr);
             sample_invalidate (m->common.pct_cpu);
             sample_invalidate (m->common.pct_mem);
@@ -1896,8 +2140,10 @@ _update_mdt (char *mdtname, char *servername, uint64_t inodes_free,
             m->common.recov_status[0]='\0';
         }
         m->common.tgt_metric_timestamp = trcv;
-        sample_update (m->inodes_free, (double)inodes_free, trcv);
-        sample_update (m->inodes_total, (double)inodes_total, trcv);
+        sample_update (m->inodes_free,    (double)inodes_free, trcv);
+        sample_update (m->inodes_total,   (double)inodes_total, trcv);
+        sample_update (m->kbytes_free,    (double)kbytes_free, trcv);
+        sample_update (m->kbytes_total,   (double)kbytes_total, trcv);
         sample_update (m->common.pct_cpu, (double)pct_cpu, trcv);
         sample_update (m->common.pct_mem, (double)pct_mem, trcv);
         if (version==2)
@@ -1909,23 +2155,23 @@ _update_mdt (char *mdtname, char *servername, uint64_t inodes_free,
                                     &samples, &sum, &sumsquares) == 0) {
                 if (!strcmp (opname, "open"))
                     sample_update (m->open, (double)samples, trcv);
-                else if (!strcmp (opname, "close"))
+                else if (!strcmp  (opname, "close"))
                     sample_update (m->close, (double)samples, trcv);
-                else if (!strcmp (opname, "getattr"))
+                else if (!strcmp  (opname, "getattr"))
                     sample_update (m->getattr, (double)samples, trcv);
-                else if (!strcmp (opname, "setattr"))
+                else if (!strcmp  (opname, "setattr"))
                     sample_update (m->setattr, (double)samples, trcv);
-                else if (!strcmp (opname, "link"))
+                else if (!strcmp  (opname, "link"))
                     sample_update (m->link, (double)samples, trcv);
-                else if (!strcmp (opname, "unlink"))
+                else if (!strcmp  (opname, "unlink"))
                     sample_update (m->unlink, (double)samples, trcv);
-                else if (!strcmp (opname, "mkdir"))
+                else if (!strcmp  (opname, "mkdir"))
                     sample_update (m->mkdir, (double)samples, trcv);
-                else if (!strcmp (opname, "rmdir"))
+                else if (!strcmp  (opname, "rmdir"))
                     sample_update (m->rmdir, (double)samples, trcv);
-                else if (!strcmp (opname, "statfs"))
+                else if (!strcmp  (opname, "statfs"))
                     sample_update (m->statfs, (double)samples, trcv);
-                else if (!strcmp (opname, "rename"))
+                else if (!strcmp  (opname, "rename"))
                     sample_update (m->rename, (double)samples, trcv);
                 else if (!strcmp (opname, "getxattr"))
                     sample_update (m->getxattr, (double)samples, trcv);
@@ -1934,7 +2180,10 @@ _update_mdt (char *mdtname, char *servername, uint64_t inodes_free,
         }
         list_iterator_destroy (itr);
     }
+
+    return;
 }
+
 
 static void
 _decode_mdt_v1 (char *val, char *fs, List mdt_data,
@@ -1943,20 +2192,25 @@ _decode_mdt_v1 (char *val, char *fs, List mdt_data,
     List mdops, mdtinfo;
     char *s, *servername, *mdtname;
     float pct_cpu, pct_mem;
-    uint64_t kbytes_free, kbytes_total;
     uint64_t inodes_free, inodes_total;
+    uint64_t kbytes_free, kbytes_total;
     ListIterator itr;
 
     if (lmt_mdt_decode_v1_v2 (val, &servername, &pct_cpu, &pct_mem, &mdtinfo, 1) < 0)
         return;
+
+/* here */
     itr = list_iterator_create (mdtinfo);
     while ((s = list_next (itr))) {
-        if (lmt_mdt_decode_v1_mdtinfo (s, &mdtname, &inodes_free,
-                                       &inodes_total, &kbytes_free,
-                                       &kbytes_total, &mdops) == 0) {
+        if (lmt_mdt_decode_v1_mdtinfo (s, &mdtname, 
+                                       &inodes_free, &inodes_total,
+                                       &kbytes_free, &kbytes_total,
+                                       &mdops) == 0) {
             if (!fs || _fsmatch (mdtname, fs)) {
-                _update_mdt (mdtname, servername, inodes_free, inodes_total,
-                             kbytes_free, kbytes_total, pct_cpu, pct_mem,
+                _update_mdt (mdtname, servername, 
+                             inodes_free, inodes_total,
+                             kbytes_free, kbytes_total,
+                             pct_cpu, pct_mem,
                              NULL, mdops, mdt_data, tnow, trcv, stale_secs,
                              1);
             }
@@ -1967,7 +2221,10 @@ _decode_mdt_v1 (char *val, char *fs, List mdt_data,
     list_iterator_destroy (itr);
     list_destroy (mdtinfo);
     free (servername);
+
+    return;
 }
+
 
 static void
 _decode_mdt_v2 (char *val, char *fs, List mdt_data,
@@ -1976,8 +2233,8 @@ _decode_mdt_v2 (char *val, char *fs, List mdt_data,
     List mdops, mdtinfo;
     char *s, *mdsname, *mdtname;
     float pct_cpu, pct_mem;
-    uint64_t kbytes_free, kbytes_total;
     uint64_t inodes_free, inodes_total;
+    uint64_t kbytes_free, kbytes_total;
     ListIterator itr;
 
     char *recov_info;
@@ -1986,13 +2243,15 @@ _decode_mdt_v2 (char *val, char *fs, List mdt_data,
         return;
     itr = list_iterator_create (mdtinfo);
     while ((s = list_next (itr))) {
-        if (lmt_mdt_decode_v2_mdtinfo (s, &mdtname, &inodes_free,
-                                       &inodes_total, &kbytes_free,
-                                       &kbytes_total, &recov_info,
-                                       &mdops) == 0) {
+        if (lmt_mdt_decode_v2_mdtinfo (s, &mdtname, 
+                                       &inodes_free, &inodes_total, 
+                                       &kbytes_free, &kbytes_total,
+                                        &recov_info, &mdops) == 0) {
             if (!fs || _fsmatch (mdtname, fs))
-                _update_mdt (mdtname, mdsname, inodes_free, inodes_total,
-                             kbytes_free, kbytes_total, pct_cpu, pct_mem,
+                _update_mdt (mdtname, mdsname,
+                             inodes_free, inodes_total,
+                             kbytes_free, kbytes_total,
+                             pct_cpu, pct_mem,
                              recov_info, mdops, mdt_data, tnow, trcv,
                              stale_secs, 2);
             free (mdtname);
@@ -2002,7 +2261,10 @@ _decode_mdt_v2 (char *val, char *fs, List mdt_data,
     list_iterator_destroy (itr);
     list_destroy (mdtinfo);
     free (mdsname);
+
+    return;
 }
+
 
 static void
 _poll_cerebro (char *fs, List mdt_data, List ost_data, int stale_secs,
@@ -2023,32 +2285,36 @@ _poll_cerebro (char *fs, List mdt_data, List ost_data, int stale_secs,
     itr = list_iterator_create (l);
     while ((c = list_next (itr))) {
         if (!(name = lmt_cbr_get_name (c)))
-            continue;
+           continue;
         if (!(node = lmt_cbr_get_nodename (c)))
-            continue;
+           continue;
         if (!(s = lmt_cbr_get_val (c)))
-            continue;
+           continue;
         if (sscanf (s, "%f;", &vers) != 1)
-            continue;
+           continue;
         trcv = lmt_cbr_get_time (c);
         if (recf)
-            _record_file (recf, tnow, trcv, node, name, s);
+          _record_file (recf, tnow, trcv, node, name, s);
         if (!strcmp (name, "lmt_mdt") && vers == 1)
-            _decode_mdt_v1 (s, fs, mdt_data, tnow, trcv, stale_secs);
+          _decode_mdt_v1 (s, fs, mdt_data, tnow, trcv, stale_secs);
         else if (!strcmp (name, "lmt_mdt") && vers == 2)
-            _decode_mdt_v2 (s, fs, mdt_data, tnow, trcv, stale_secs);
+          _decode_mdt_v2 (s, fs, mdt_data, tnow, trcv, stale_secs);
         else if (!strcmp (name, "lmt_ost") && vers == 2)
-            _decode_ost_v2 (s, fs, ost_data, tnow, trcv, stale_secs);
+          _decode_ost_v2 (s, fs, ost_data, tnow, trcv, stale_secs);
         else if (!strcmp (name, "lmt_osc") && vers == 1)
-            _decode_osc_v1 (s, fs, ost_data, tnow, trcv, stale_secs);
+          _decode_osc_v1 (s, fs, ost_data, tnow, trcv, stale_secs);
     }
     list_iterator_destroy (itr);
     list_destroy (l);
     if (tp)
         *tp = tnow;
+
+    return;
 }
 
-/* Write a cerebro metric record and some other info to a line in a file.
+
+/*
+ * Write a cerebro metric record and some other info to a line in a file.
  * Ignore any errors, check with ferror () elsewhere.
  */
 static void
@@ -2057,9 +2323,13 @@ _record_file (FILE *f, time_t tnow, time_t trcv, char *node,
 {
     (void)fprintf (f, "%"PRIu64" %"PRIu64" %s %s %s\n",
                    (uint64_t)tnow, (uint64_t)trcv, node, name, s);
+
+    return;
 }
 
-/* Create a (time, offset) tuple to be added to time_series List.
+
+/*
+ * Create a (time, offset) tuple to be added to time_series List.
  */
 static ts_t *
 _ts_create (long p, uint64_t t)
@@ -2068,10 +2338,13 @@ _ts_create (long p, uint64_t t)
 
     ts->p = p;
     ts->t = t;
-    return ts;
+
+    return (ts);
 }
 
-/* Analagous to _poll_cerebro (), except input is taken from a file
+
+/*
+ * Analagous to _poll_cerebro (), except input is taken from a file
  * written by _record_file ().   The wall clock time recorded in the first
  * field groups records into batches.  This function reads only one batch,
  * and places its wall clock time in *tp.
@@ -2101,17 +2374,17 @@ _play_file (char *fs, List mdt_data, List ost_data, List time_series,
         if (sscanf (s, "%f;", &vers) != 1)
             msg_exit ("Parse error reading metric version in playback file");
         if (!strcmp (name, "lmt_mdt") && vers == 1)
-            _decode_mdt_v1 (s, fs, mdt_data, tnow, trcv, stale_secs);
+           _decode_mdt_v1 (s, fs, mdt_data, tnow, trcv, stale_secs);
         if (!strcmp (name, "lmt_mdt") && vers == 2)
-            _decode_mdt_v2 (s, fs, mdt_data, tnow, trcv, stale_secs);
+           _decode_mdt_v2 (s, fs, mdt_data, tnow, trcv, stale_secs);
         else if (!strcmp (name, "lmt_ost") && vers == 2)
-            _decode_ost_v2 (s, fs, ost_data, tnow, trcv, stale_secs);
+           _decode_ost_v2 (s, fs, ost_data, tnow, trcv, stale_secs);
         else if (!strcmp (name, "lmt_osc") && vers == 1)
-            _decode_osc_v1 (s, fs, ost_data, tnow, trcv, stale_secs);
+           _decode_osc_v1 (s, fs, ost_data, tnow, trcv, stale_secs);
         if ((pos = ftell (f)) < 0)
-            err_exit ("ftell failed on playback file");
+           err_exit ("ftell failed on playback file");
         if (!ts && time_series)
-            ts = _ts_create (pos, tnow);
+           ts = _ts_create (pos, tnow);
         tmark = tnow;
     }
     if (ferror (f))
@@ -2119,15 +2392,18 @@ _play_file (char *fs, List mdt_data, List ost_data, List time_series,
     if (tmark == 0)
         msg_exit ("Error parsing playback file");
     if (tp)
-        *tp = tmark;
+       *tp = tmark;
     if (tdiffp && !feof (f))
-        *tdiffp = tdiff;
+       *tdiffp = tdiff;
     if (ts && time_series)
-        list_prepend (time_series, ts); 
+       list_prepend (time_series, ts); 
         
+    return;
 }
 
-/* Seek to [count] batches of cerebro data ago.
+
+/*
+ * Seek to [count] batches of cerebro data ago.
  * (position at beginning of batch).
  */
 static int
@@ -2142,10 +2418,13 @@ _rewind_file (FILE *f, List time_series, int count)
         res++;
         free (ts);
     }
-    return res;
+
+    return (res);
 }
 
-/* Seek to previous batch repeatedly until target time is reached.
+
+/*
+ * Seek to previous batch repeatedly until target time is reached.
  */
 static void
 _rewind_file_to (FILE *f, List time_series, time_t target)
@@ -2160,9 +2439,13 @@ _rewind_file_to (FILE *f, List time_series, time_t target)
             found = 1;
         free (ts);
     }
+ 
+    return;
 }
 
-/* Peek at the data to find a default file system to monitor.
+
+/*
+ * Peek at the data to find a default file system to monitor.
  * Ignore file systems with no OSTs or no MDTs.
  */
 static char *
@@ -2181,8 +2464,9 @@ _find_first_fs (FILE *playf, int stale_secs)
     list_iterator_destroy (itr);
     list_destroy (fsl);
 
-    return ret;
+    return (ret);
 }
+
 
 static void
 _single_ost_update_summary (void *ost_v, void *summary_v)
@@ -2190,15 +2474,15 @@ _single_ost_update_summary (void *ost_v, void *summary_v)
     oststat_t *ost        = (oststat_t *) ost_v;
     oststat_t *summary    = (oststat_t *) summary_v;
 
-    sample_add (summary->rbytes, ost->rbytes);
-    sample_add (summary->wbytes, ost->wbytes);
-    sample_add (summary->iops, ost->iops);
-    sample_add (summary->kbytes_free, ost->kbytes_free);
+    sample_add (summary->rbytes,       ost->rbytes);
+    sample_add (summary->wbytes,       ost->wbytes);
+    sample_add (summary->iops,         ost->iops);
+    sample_add (summary->kbytes_free,  ost->kbytes_free);
     sample_add (summary->kbytes_total, ost->kbytes_total);
-    sample_add (summary->lock_count, ost->lock_count);
-    sample_add (summary->grant_rate, ost->grant_rate);
-    sample_add (summary->cancel_rate, ost->cancel_rate);
-    sample_add (summary->connect, ost->connect);
+    sample_add (summary->lock_count,   ost->lock_count);
+    sample_add (summary->grant_rate,   ost->grant_rate);
+    sample_add (summary->cancel_rate,  ost->cancel_rate);
+    sample_add (summary->connect,      ost->connect);
 
     /* Any "missing clients" on OST's should be reflected in OSS exp.
      */
@@ -2206,7 +2490,10 @@ _single_ost_update_summary (void *ost_v, void *summary_v)
     
     if (ost->common.tag)
         summary->common.tag = ost->common.tag;
+
+    return;
 }
+
 
 static void
 _summarize_target (List target_data, List server_data, time_t tnow,
@@ -2227,9 +2514,10 @@ _summarize_target (List target_data, List server_data, time_t tnow,
             update_fn( (void *) target, (void *) server );
             if (target->tgt_metric_timestamp < server->tgt_metric_timestamp)
                 server->tgt_metric_timestamp = target->tgt_metric_timestamp;
-            /* Ensure recov_status and tgtstate reflect any unrecovered or
-             * non-full state of individual targets.  Last in wins.
-             */
+/*
+ *          Ensure recov_status and tgtstate reflect any unrecovered or
+ *          non-full state of individual targets.  Last in wins.
+ */
             if (strcmp (target->tgtstate, "F") != 0)
                 memcpy (server->tgtstate, target->tgtstate,
                         sizeof (target->tgtstate));
@@ -2247,33 +2535,47 @@ _summarize_target (List target_data, List server_data, time_t tnow,
         }
     }
     list_iterator_destroy (itr);
+
+    return;
 }
 
+
+/* max */
 static void
 _single_mdt_update_summary (void *mdt_v, void *summary_v)
 {
     mdtstat_t *mdt        = (mdtstat_t *) mdt_v;
     mdtstat_t *summary    = (mdtstat_t *) summary_v;
 
-    sample_add (summary->open, mdt->open);
-    sample_add (summary->close, mdt->close);
-    sample_add (summary->getattr, mdt->getattr);
-    sample_add (summary->setattr, mdt->setattr);
-    sample_add (summary->link, mdt->link);
-    sample_add (summary->unlink, mdt->unlink);
-    sample_add (summary->mkdir, mdt->mkdir);
-    sample_add (summary->rmdir, mdt->rmdir);
-    sample_add (summary->statfs, mdt->statfs);
-    sample_add (summary->rename, mdt->rename);
-    sample_add (summary->getxattr, mdt->getxattr);
+    sample_add (summary->open,         mdt->open);
+    sample_add (summary->close,        mdt->close);
+    sample_add (summary->getattr,      mdt->getattr);
+    sample_add (summary->setattr,      mdt->setattr);
+    sample_add (summary->link,         mdt->link);
+    sample_add (summary->unlink,       mdt->unlink);
+    sample_add (summary->mkdir,        mdt->mkdir);
+    sample_add (summary->rmdir,        mdt->rmdir);
+    sample_add (summary->statfs,       mdt->statfs);
+    sample_add (summary->rename,       mdt->rename);
 
-    /* %cpu and %mem are per-server, and so the initial copy
-     * made by _copy_mdtstat() is correct for the summarized
-     * view with no further processing
-     */
+    sample_add (summary->inodes_total, mdt->inodes_total);
+    sample_add (summary->inodes_free,  mdt->inodes_free);
+    sample_add (summary->kbytes_total, mdt->kbytes_total);
+    sample_add (summary->kbytes_free,  mdt->kbytes_free);
+    sample_add (summary->getxattr,     mdt->getxattr);
+
+/*
+ *  %cpu and %mem are per-server, and so the initial copy
+ *  made by _copy_mdtstat() is correct for the summarized
+ *  view with no further processing
+ */
+
+    return;
 }
 
-/* Re-create mds_data, one record per mds, with data aggregated from
+
+/*
+ * Re-create mds_data, one record per mds, with data aggregated from
  * the MDT's on that MDS.
  */
 static void
@@ -2283,9 +2585,13 @@ _summarize_mdt (List mdt_data, List mds_data, time_t tnow, int stale_secs)
                        _single_mdt_update_summary, _copy_mdtstat,
                        (ListFindF)  _match_mdtstat2);
     list_sort (mds_data, (ListCmpF)_cmp_tgtstat_byserver);
+
+    return;
 }
 
-/* Re-create oss_data, one record per oss, with data aggregated from
+
+/*
+ * Re-create oss_data, one record per oss, with data aggregated from
  * the OST's on that OSS.
  */
 static void
@@ -2295,9 +2601,13 @@ _summarize_ost (List ost_data, List oss_data, time_t tnow, int stale_secs)
                        _single_ost_update_summary, _copy_oststat,
                        (ListFindF)  _match_oststat2);
     list_sort (oss_data, (ListCmpF)_cmp_tgtstat_byserver);
+
+    return;
 }
 
-/* Identify the record in c[] which should be used for
+
+/*
+ * Identify the record in c[] which should be used for
  * sorting the list of targets.  k is the character
  * entered by the user, sort_index identifies the
  * record used previously, and c[] includes the key
@@ -2325,10 +2635,13 @@ _get_sort_index (char k, int sort_index, sort_t c[], int nc)
         }
     }
     assert (sort_index >= 0 && sort_index < nc);
-    return sort_index;
+
+    return (sort_index);
 }
 
-/* Sort the list of MDT's using the specified comparison function.
+
+/*
+ * Sort the list of MDT's using the specified comparison function.
  * tnow required for comparisons that operate on samples.
  */
 static void
@@ -2336,26 +2649,36 @@ _sort_tgtlist (List tgt_data, time_t tnow, ListCmpF comparison_function)
 {
     sort_tnow = tnow;
     list_sort (tgt_data, comparison_function);
+
+    return;
 }
 
-/* Helper for _list_empty_out ().
+
+/*
+ * Helper for _list_empty_out ().
  */
 static int
 _list_find_all (void *x, void *key)
 {
-    return 1;
+    return (1);
 }
 
-/* Utility function to destroy all elements of a List without
+
+/*
+ * Utility function to destroy all elements of a List without
  * destroying the list itself.
  */
 static void
 _list_empty_out (List l)
 {
     list_delete_all (l, (ListFindF)_list_find_all, NULL);
+
+    return;
 }
 
-/* Clear all tags.
+
+/*
+ * Clear all tags.
  */
 static void
 _clear_tags (List ost_data)
@@ -2367,9 +2690,13 @@ _clear_tags (List ost_data)
     while ((o = list_next (itr)))
         o->common.tag = 0;
     list_iterator_destroy (itr);
+
+    return;
 }
 
-/* Set tag value on ost's with specified oss.
+
+/*
+ * Set tag value on ost's with specified oss.
  */
 static void
 _tag_ost_byoss (List ost_data, char *ossname, int tagval)
@@ -2382,9 +2709,13 @@ _tag_ost_byoss (List ost_data, char *ossname, int tagval)
         if (!strcmp (o->ossname, ossname))
             o->common.tag = tagval;
     list_iterator_destroy (itr);
+
+    return;
 }
 
-/* Toggle tag value on nth ost.
+
+/*
+ * Toggle tag value on nth ost.
  * If tagging ost_data (first param), set the last paramter NULL.
  * If tagging oss_data (first param), set the last parmater to ost_data,
  * and all ost's on this oss will get tagged too.
@@ -2406,8 +2737,9 @@ _tag_nth_ost (List ost_data, int selost, List ost_data2)
     list_iterator_destroy (itr);
     if (ost_data2 && o != NULL)
         _tag_ost_byoss (ost_data2, o->ossname, o->common.tag);
-}
 
+    return;
+}
 
 /*
  * vi:tabstop=4 shiftwidth=4 expandtab
