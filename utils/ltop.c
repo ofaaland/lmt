@@ -1966,7 +1966,8 @@ _update_mdt (char *mdtname, char *servername, uint64_t inodes_free,
             sample_invalidate (m->getxattr);
             sample_invalidate (m->common.pct_cpu);
             sample_invalidate (m->common.pct_mem);
-            sample_invalidate (m->setxattr);
+            if (version == 3)
+                sample_invalidate (m->setxattr);
             snprintf (m->common.servername, sizeof (m->common.servername),
                       "%s", servername);
             m->common.recov_status[0]='\0';
