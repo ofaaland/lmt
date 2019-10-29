@@ -121,6 +121,7 @@ typedef struct {
     sample_t kbytes_free;       /* free space (kbytes) */
     sample_t kbytes_total;      /* total space (kbytes) */
     sample_t getxattr;          /* getxattr ops/sec */
+    sample_t setxattr;          /* setxattr ops/sec */
 } mdtstat_t;
 
 typedef struct {
@@ -1939,7 +1940,7 @@ _update_mdt (char *mdtname, char *servername, uint64_t inodes_free,
     mdtstat_t *m;
     uint64_t samples, sum, sumsquares;
 
-    assert (version==1 || version==2);
+    assert (version==1 || version==2 || version==3);
     assert (version==1 ? recov_status==NULL : recov_status!=NULL );
 
     if (!(m = list_find_first (mdt_data, (ListFindF)_match_mdtstat, mdtname))) {
@@ -1965,6 +1966,7 @@ _update_mdt (char *mdtname, char *servername, uint64_t inodes_free,
             sample_invalidate (m->getxattr);
             sample_invalidate (m->common.pct_cpu);
             sample_invalidate (m->common.pct_mem);
+            sample_invalidate (m->setxattr);
             snprintf (m->common.servername, sizeof (m->common.servername),
                       "%s", servername);
             m->common.recov_status[0]='\0';
@@ -1976,7 +1978,7 @@ _update_mdt (char *mdtname, char *servername, uint64_t inodes_free,
         sample_update (m->kbytes_total, (double)kbytes_total, trcv);
         sample_update (m->common.pct_cpu, (double)pct_cpu, trcv);
         sample_update (m->common.pct_mem, (double)pct_mem, trcv);
-        if (version==2)
+        if (version==2 || version==3)
             snprintf (m->common.recov_status, sizeof (m->common.recov_status),
                       "%s", recov_status);
         itr = list_iterator_create (mdops);
@@ -2005,6 +2007,8 @@ _update_mdt (char *mdtname, char *servername, uint64_t inodes_free,
                     sample_update (m->rename, (double)samples, trcv);
                 else if (!strcmp (opname, "getxattr"))
                     sample_update (m->getxattr, (double)samples, trcv);
+                else if (!strcmp (opname, "setxattr"))
+                    sample_update (m->setxattr, (double)samples, trcv);
                 free (opname);
             }
         }
@@ -2081,6 +2085,41 @@ _decode_mdt_v2 (char *val, char *fs, List mdt_data,
 }
 
 static void
+_decode_mdt_v3 (char *val, char *fs, List mdt_data,
+                time_t tnow, time_t trcv, int stale_secs)
+{
+    List mdops, mdtinfo;
+    char *s, *mdsname, *mdtname;
+    float pct_cpu, pct_mem;
+    uint64_t kbytes_free, kbytes_total;
+    uint64_t inodes_free, inodes_total;
+    ListIterator itr;
+
+    char *recov_info;
+
+    if (lmt_mdt_decode_v1_v2 (val, &mdsname, &pct_cpu, &pct_mem, &mdtinfo, 3) < 0)
+        return;
+    itr = list_iterator_create (mdtinfo);
+    while ((s = list_next (itr))) {
+        if (lmt_mdt_decode_v3_mdtinfo (s, &mdtname, &inodes_free,
+                                       &inodes_total, &kbytes_free,
+                                       &kbytes_total, &recov_info,
+                                       &mdops) == 0) {
+            if (!fs || _fsmatch (mdtname, fs))
+                _update_mdt (mdtname, mdsname, inodes_free, inodes_total,
+                             kbytes_free, kbytes_total, pct_cpu, pct_mem,
+                             recov_info, mdops, mdt_data, tnow, trcv,
+                             stale_secs, 3);
+            free (mdtname);
+            list_destroy (mdops);
+        }
+    }
+    list_iterator_destroy (itr);
+    list_destroy (mdtinfo);
+    free (mdsname);
+}
+
+static void
 _poll_cerebro (char *fs, List mdt_data, List ost_data, int stale_secs,
                FILE *recf, time_t *tp)
 {
@@ -2113,6 +2152,8 @@ _poll_cerebro (char *fs, List mdt_data, List ost_data, int stale_secs,
             _decode_mdt_v1 (s, fs, mdt_data, tnow, trcv, stale_secs);
         else if (!strcmp (name, "lmt_mdt") && vers == 2)
             _decode_mdt_v2 (s, fs, mdt_data, tnow, trcv, stale_secs);
+        else if (!strcmp (name, "lmt_mdt") && vers == 3)
+            _decode_mdt_v3 (s, fs, mdt_data, tnow, trcv, stale_secs);
         else if (!strcmp (name, "lmt_ost") && vers == 2)
             _decode_ost_v2 (s, fs, ost_data, tnow, trcv, stale_secs);
         else if (!strcmp (name, "lmt_osc") && vers == 1)
