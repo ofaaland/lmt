@@ -2222,6 +2222,8 @@ _play_file (char *fs, List mdt_data, List ost_data, List time_series,
             _decode_mdt_v1 (s, fs, mdt_data, tnow, trcv, stale_secs);
         if (!strcmp (name, "lmt_mdt") && vers == 2)
             _decode_mdt_v2 (s, fs, mdt_data, tnow, trcv, stale_secs);
+        else if (!strcmp (name, "lmt_mdt") && vers == 3)
+            _decode_mdt_v3 (s, fs, mdt_data, tnow, trcv, stale_secs);
         else if (!strcmp (name, "lmt_ost") && vers == 2)
             _decode_ost_v2 (s, fs, ost_data, tnow, trcv, stale_secs);
         else if (!strcmp (name, "lmt_osc") && vers == 1)
