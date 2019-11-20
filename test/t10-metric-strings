@@ -24,21 +24,26 @@ test_metrics() {
     rm -f $ref_file
     rm -f $fault_file
     rm -f $diff_file
-    
+
+    local difference_found=0
     while read line; do
-        ref_string="$(eval echo "\"$line\"")"
+        ref_string="$(eval echo "\"$line\"" | sed 's/  / /g')"
         m_name=$(echo $ref_string | cut -f1 -d:)
-        tst_string=$(../utils/lmtmetric -r $path/ -m $m_name)
+        tst_string=$(../utils/lmtmetric -r $path/ -m $m_name | sed 's/  / /g')
         echo $tst_string >> $out_file
         if [ "$ref_string" != "$tst_string" ]; then
-            echo $ref_string >> $ref_file
-            echo $ref_string | tr ";" "\n" >> $ref_file
-
-            echo $tst_string >> $fault_file
-            echo $tst_string | tr ";" "\n" >> $fault_file
-            diff -u $ref_file $fault_file >> $diff_file || true
+            difference_found=1
+#            echo $ref_string >> $ref_file
+#            echo $ref_string | tr ";" "\n" >> $ref_file
+#
+#            echo $tst_string >> $fault_file
+#            echo $tst_string | tr ";" "\n" >> $fault_file
+#            diff -u $ref_file $fault_file >> $diff_file || true
         fi
     done < $exp_file
+    if [ $difference_found -eq 1 ]; then
+        diff -u $exp_file $out_file > $diff_file || true
+    fi
 
     if [ -s $diff_file ]; then
         echo "  $version: FAIL"
