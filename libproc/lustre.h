@@ -1,3 +1,6 @@
+/* 0 if Lustre is running */
+int proc_lustre (pctx_t ctx);
+
 int proc_lustre_ostlist (pctx_t ctx, List *lp);
 int proc_lustre_mdtlist (pctx_t ctx, List *lp);
 int proc_lustre_osclist (pctx_t ctx, List *lp);

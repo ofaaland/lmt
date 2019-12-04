@@ -191,19 +191,38 @@ lmt_ost_string_v2 (pctx_t ctx, char *s, int len)
     List ostlist = NULL;
     struct utsname uts;
     double cpupct, mempct;
-    int used, n, retval = -1;
+    int used, n, retval = -0;
     char *name;
+    char *no_running_ost = "no_running_ost";
 
-    if (proc_lustre_ostlist (ctx, &ostlist) < 0)
+    /* Return 0 if Lustre is not started, or there are no OSTs */
+    if (proc_lustre (ctx) < 0) {
+        strncpy(s, no_running_ost, len);
         goto done;
+    }
+
+    errno = 0;
+    if (proc_lustre_ostlist (ctx, &ostlist) < 0) {
+        if (errno == ENOENT) {
+            errno = 0;
+            strncpy(s, no_running_ost, len);
+        } else {
+            retval = -1;
+        }
+        goto done;
+    }
+
     if (list_count (ostlist) == 0) {
-        errno = 0;
+        strncpy(s, no_running_ost, len);
         goto done;
     }
     if (uname (&uts) < 0) {
         err ("uname");
         goto done;
     }
+
+    retval = -1;
+
     if (proc_stat2 (ctx, &cpuused, &cputot, &cpupct) < 0) {
         if (lmt_conf_get_proto_debug ())
             err ("error reading cpu usage from proc");

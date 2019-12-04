@@ -106,19 +106,39 @@ int
 lmt_osc_string_v1 (pctx_t ctx, char *s, int len)
 {
     struct utsname uts;
-    int n, used, retval = -1;
+    int n, used, retval = 0;
     List osclist = NULL;
     ListIterator itr = NULL;
     char *name;
+    char *no_running_osc = "no_running_osc";
+
+    /* Return 0 if Lustre is not started, or there are no OSCs */
+    if (proc_lustre (ctx) < 0) {
+        strncpy(s, no_running_osc, len);
+        goto done;
+    }
 
     /* N.B. this should only succeed on an mds - see libproc/lustre.c.
      */
-    if (proc_lustre_osclist (ctx, &osclist) < 0)
+    errno = 0;
+    if (proc_lustre_osclist (ctx, &osclist) < 0) {
+        if (errno == ENOENT) {
+            errno = 0;
+            strncpy(s, no_running_osc, len);
+        } else {
+            retval = -1;
+        }
         goto done;
+    }
+
     if (list_count (osclist) == 0) {
+        strncpy(s, no_running_osc, len);
         errno = ENOENT;
         goto done;
     }
+
+    retval = -1;
+
     if (uname (&uts) < 0) {
         err ("uname");
         goto done;

@@ -74,18 +74,37 @@ int
 lmt_router_string_v1 (pctx_t ctx, char *s, int len)
 {
     static uint64_t cpuusage = 0, cputot = 0;
-    int retval = -1;
+    int retval = 0;
     struct utsname uts;
     double mempct, cpupct;
     uint64_t newbytes;
     int n, ena;
+    char *no_running_lnet_router = "no_running_lnet_router";
 
-    if (proc_lustre_lnet_routing_enabled (ctx, &ena) < 0)
-        goto done;
-    if (!ena) {
-        errno = 0;
+    /* Return 0 if LNet is not started */
+    if (proc_lustre (ctx) < 0) {
+        strncpy(s, no_running_lnet_router, len);
         goto done;
     }
+
+    errno = 0;
+    if (proc_lustre_lnet_routing_enabled (ctx, &ena) < 0) {
+        if (errno == ENOENT) {
+            errno = 0;
+            strncpy(s, no_running_lnet_router, len);
+        } else {
+            retval = -1;
+        }
+        goto done;
+    }
+
+    if (!ena) {
+        strncpy(s, no_running_lnet_router, len);
+        goto done;
+    }
+
+    retval = -1;
+
     if (uname (&uts) < 0) {
         err ("uname");
         goto done;

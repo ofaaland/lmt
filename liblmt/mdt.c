@@ -267,19 +267,38 @@ lmt_mdt_string_v2 (pctx_t ctx, char *s, int len)
 {
     static uint64_t cpuused = 0, cputot = 0;
     struct utsname uts;
-    int n, used, retval = -1;
+    int n, used, retval = 0;
     double cpupct, mempct;
     List mdtlist = NULL;
     ListIterator itr = NULL;
     char verstr[2]="2";
     char *name;
+    char *no_running_mdt = "no_running_mdt";
 
-    if (proc_lustre_mdtlist (ctx, &mdtlist) < 0)
-        goto done;
-    if (list_count (mdtlist) == 0) {
-        errno = 0;
+    /* Return 0 if Lustre is not started, or there are no MDTs */
+    if (proc_lustre (ctx) < 0) {
+        strncpy(s, no_running_mdt, len);
         goto done;
     }
+
+    errno = 0;
+    if (proc_lustre_mdtlist (ctx, &mdtlist) < 0) {
+        if (errno == ENOENT) {
+            errno = 0;
+            strncpy(s, no_running_mdt, len);
+        } else {
+            retval = -1;
+        }
+        goto done;
+    }
+
+    if (list_count (mdtlist) == 0) {
+        strncpy(s, no_running_mdt, len);
+        goto done;
+    }
+
+    retval = -1;
+
     if (uname (&uts) < 0) {
         err ("uname");
         goto done;

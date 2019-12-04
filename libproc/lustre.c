@@ -38,6 +38,8 @@
 #include "proc.h"
 #include "lustre.h"
 
+#define PROC_FS_LUSTRE                  "fs/lustre"
+
 #define PROC_FS_LUSTRE_OST_DIR          "fs/lustre/obdfilter"
 #define PROC_FS_LUSTRE_OSC_DIR          "fs/lustre/osc"
 
@@ -641,6 +643,21 @@ done:
     } else {
          list_destroy (l);
     }
+    return ret;
+}
+
+/*
+ * Returns 0 if Lustre is started, <0 if not.
+ */
+int
+proc_lustre (pctx_t ctx)
+{
+    int ret;
+
+    ret = proc_open (ctx, PROC_FS_LUSTRE);
+    if (ret == 0)
+        proc_close(ctx);
+
     return ret;
 }
 
