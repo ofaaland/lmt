@@ -47,6 +47,10 @@ test_metrics() {
     if [ -s $diff_file ]; then
         echo "  $version: FAIL"
         PASS=false
+	echo =====================================
+	echo === version: $version ===
+	cat $diff_file
+	echo =====================================
     else
         echo "  $version: PASS"
     fi
