@@ -32,6 +32,7 @@ test_metrics() {
 	fi
         ref_string="$(eval echo "\"$line\"")"
         m_name=$(echo $ref_string | cut -f1 -d:)
+        echo testing path $path/ metric $m_name
         tst_string=$(../utils/lmtmetric -r $path/ -m $m_name)
         echo $tst_string >> $out_file
         if [ "$ref_string" != "$tst_string" ]; then
