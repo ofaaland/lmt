@@ -42,6 +42,11 @@ Lustre Monitoring Tools (LMT) Server Agent
 make
 
 %check
+ls
+pushd test
+ls
+./t10-metric-strings || echo "t10-metric-strings failed"
+popd
 SKIP_INTERACTIVE=true make -C test check
 
 %install
