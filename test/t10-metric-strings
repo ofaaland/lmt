@@ -24,15 +24,15 @@ test_metrics() {
     rm -f $ref_file
     rm -f $fault_file
     rm -f $diff_file
-    
+
     while read line; do
 	if [ -z "$line" ]; then
-		echo "skipping empty line"
+		echo "skipping empty line exp_file $exp_file" >&2
 		continue
 	fi
         ref_string="$(eval echo "\"$line\"")"
         m_name=$(echo $ref_string | cut -f1 -d:)
-        echo testing path $path/ metric $m_name
+        echo testing path $path/ metric $m_name >&2
         tst_string=$(../utils/lmtmetric -r $path/ -m $m_name)
         echo $tst_string >> $out_file
         if [ "$ref_string" != "$tst_string" ]; then
@@ -48,10 +48,10 @@ test_metrics() {
     if [ -s $diff_file ]; then
         echo "  $version: FAIL"
         PASS=false
-	echo =====================================
-	echo === version: $version ===
-	cat $diff_file
-	echo =====================================
+	echo ===================================== >&2
+	echo === version: $version === >&2
+	cat $diff_file >&2
+	echo ===================================== >&2
     else
         echo "  $version: PASS"
     fi
