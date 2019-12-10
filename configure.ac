@@ -1,7 +1,7 @@
 ##
 # Prologue
 ##
-AC_INIT([lmt], [3.2.9d])
+AC_INIT([lmt], [3.2.9e])
 AC_CONFIG_AUX_DIR([config])
 AC_CONFIG_HEADERS([config/config.h])
 AC_CONFIG_SRCDIR([NEWS])
