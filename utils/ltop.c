@@ -2197,9 +2197,7 @@ _poll_cerebro (char *fs, List mdt_data, List ost_data, int stale_secs,
         if (sscanf (s, "%f;", &vers) != 1)
             continue;
         trcv = lmt_cbr_get_time (c);
-        if (recf)
-            _record_file (recf, tnow, trcv, node, name, s);
-        else if (!strcmp (name, "lmt_mdt") && vers == 2)
+        if (!strcmp (name, "lmt_mdt") && vers == 2)
             _decode_mdt_v2 (s, fs, mdt_data, tnow, trcv, stale_secs);
         else if (!strcmp (name, "lmt_mdt") && vers == 3)
             _decode_mdt_v3 (s, fs, mdt_data, tnow, trcv, stale_secs);
@@ -2207,6 +2205,8 @@ _poll_cerebro (char *fs, List mdt_data, List ost_data, int stale_secs,
             _decode_ost_v2 (s, fs, ost_data, tnow, trcv, stale_secs);
         else if (!strcmp (name, "lmt_osc") && vers == 1)
             _decode_osc_v1 (s, fs, ost_data, tnow, trcv, stale_secs);
+        if (recf)
+            _record_file (recf, tnow, trcv, node, name, s);
     }
     list_iterator_destroy (itr);
     list_destroy (l);
